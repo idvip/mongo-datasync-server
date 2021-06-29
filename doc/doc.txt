@@ -1,0 +1,102 @@
+
+【数据传输】
+数据包传输：HTTP协议
+文件格式：zip
+文件名：$uuid.zip
+包结构：/tmp目录下：config.json、data/$表名_1.json、data/$表名_2.json
+config.json：
+{
+	version:1,
+	startTime:169999999,
+	endTime:16999999,
+	uuid:xxx,
+	state:running/package/done  /*正在处理数据/已经处理完正在打包（客户端收到的数据包状态）/已打包完*/
+	data:[
+			{
+				table:表名,
+				count:3333,
+				type:xx,//同步类型：1新增 2不存在新增，存在则更新  3清除表所有数据并插入新数据
+				files:[$表名_1.json、$表名_2.json]
+			}
+	]
+}
+
+
+【流程】
+* 同时只支持一次导出，上一次未完成无法开启新的一次，完成态是指客户端调用完删除后的状态
+1：client发起请求，传递开始时间（可为空，应该查询当前数据最大时间做为开始时间）、结束时间（不可为空）
+2：server收到请求后先判断有无临时文件夹，如存在则返回失败，查询数据，如数据量为0则返回失败，否则[开始预处理]返回UUID并[后台开始处理数据包]
+3：client收到响应的UUID，每隔5分钟调用server接口查询处理情况，如果处理成功则开始[解析并导入数据包]
+4：client导入成功后
+
+
+[开始预处理]
+1：生成UUID
+2：生成config.json（状态为：running）
+3：创建临时文件夹(tmp)
+4：保存config.js到tmp文件夹
+
+[后台开始处理数据包]
+1：根据配置文件分页查询对应的数据
+2：根据config.json保存对应的文件
+3：全部保存完后更改config.json里的状态（状态为：package），打压缩包$uuid.zip
+4：打包完成更改config.json里的状态（状态为：done）
+
+
+
+【server】
+框架：express、mongodb
+类型：express应用，提供API、后台任务
+系统配置文件：
+mongo：{}主数据库连接配置
+tables:[
+	{name:表名,timeField:时间字段,type:同步类型}
+]
+
+同步类型：1新增（默认） 2不存在新增，存在则更新  3清除表所有数据并插入新数据（此类型忽略timeField字段）
+
+数据目录：public
+
+API：
+[请求导出]
+POST /bak/submit {startTime,endTime}（数字型，时间戳）
+{code:xxx,uuid:xxx,message:''}
+code=0时有uuid字段
+错误类型：
+{code:101,message:'当前时间段无数据可传输'}
+{code:102,message:'存在未完成的数据传输'}
+{code:103,message:'endTime不能为空'}
+
+
+
+[检查是否可下载]
+POST /bak/check {uuid}
+{code:xxx,path:xxx,message:''}
+code=0时并且path有值时表示已经处理完可以下载，path为数据包相对路径
+错误类型：
+{code:103,message:'不存在的UUID或已处理完毕'}
+
+[清除数据]
+POST /bak/clean {uuid}
+{code:xxx,message:''}
+code=0时清除成功
+错误类型：
+{code:103,message:'不存在的UUID或已处理完毕'}
+{code:104,message:'当前状态不可清除'}
+*client下载完并导入成功后调用该方法进行数据清除，此操作将清除server端当前uuid对应数据包的数据库数据，注意：仅清除同步类型=1的数据
+*清除暂未实现，目前只是将tmp文件夹更改为uui，表示没有未完成的任务，可开始下一次任务
+
+【client】
+框架：mongodb
+类型：普通Node程序 ，根据配置定时调用server接口
+系统配置文件：{
+	interval:处理间隔时间（秒）
+	serverPath:服务端地址
+}
+
+运行配置文件（保存运行状态）：
+{
+	state:wait/submit/download/import, 等待下一次运行（运行完成）/已提交导出请求/已下载/已导入
+	time:上一次（本次）开始时间，时间戳
+	uuid:上一次（本次）UUID
+}
